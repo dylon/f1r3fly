@@ -1,0 +1,13 @@
+autoconf
+cabal-install
+cmake
+curl
+ghc
+git
+jflex
+libtool
+make
+openjdk-11-jdk
+protobuf-compiler
+sbt
+unzip
