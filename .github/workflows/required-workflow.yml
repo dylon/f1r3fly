@@ -1,4 +1,4 @@
-name: Build, Test, and Deploy
+name: Build, Test, and Deploy (required)
 on:
   push:
     branches:
@@ -144,7 +144,7 @@ jobs:
           path: /tmp/rchain-worktree.tar.gz
 
 
-  scala_unit_tests:
+  required_scala_unit_tests:
     name: Unit Tests (Scala)
     needs: build_base
     runs-on: ubuntu-latest
@@ -164,12 +164,10 @@ jobs:
           - "'casper/test:testOnly coop.rchain.casper.addblock.*'"
           - "'casper/test:testOnly coop.rchain.casper.api.*'"
           - "'casper/test:testOnly coop.rchain.casper.batch1.*'"
-          - "'casper/test:testOnly coop.rchain.casper.batch2.*'"
           - "'casper/test:testOnly coop.rchain.casper.engine.*'"
           - "'casper/test:testOnly coop.rchain.casper.genesis.*'"
           - "'casper/test:testOnly coop.rchain.casper.merging.*'"
           - "'casper/test:testOnly coop.rchain.casper.util.*'"
-          - REMAINDER # Do not modify/remove!
     env:
       TESTS: ${{ matrix.tests }}
     steps:
@@ -367,7 +365,7 @@ jobs:
   # workarounds (see below).
   #
   # [1] https://github.community/t5/GitHub-Actions/Container-volumes-key-not-mounting-volume/m-p/34798
-  integration_tests:
+  required_integration_tests:
     name: Integration Tests
     needs: build_docker_image
     runs-on: ubuntu-22.04
@@ -385,19 +383,10 @@ jobs:
         # To learn about REMAINDER, see github/print-integration-test-selection.
         tests:
           - test_backward_compatible
-          - test_dag_correctness
-          - test_finalization
           - test_genesis_ceremony
           - test_propose
-          - test_slash_invalid_block_hash
-          - test_slash_invalid_block_number
-          - test_slash_invalid_block_seq
-          - test_slash_justification_not_correct
-          - test_slash_GHOST_disobeyed
           - test_storage
-          - test_synchrony_constraint
           - test_wallets
-          - REMAINDER # Do not modify/remove!
     env:
       TESTS: ${{ matrix.tests }}
       # In integration tests multiple RNode instances are created so memory
@@ -483,8 +472,8 @@ jobs:
   release_docker_image:
     name: Release Docker Image
     needs:
-      - scala_unit_tests
-      - integration_tests
+      - required_scala_unit_tests
+      - required_integration_tests
       - build_docker_image
       - build_base
     if: "github.event_name == 'push' && (startsWith(github.ref, 'refs/tags/') || github.ref == 'refs/heads/trying' || github.ref == 'refs/heads/staging')"
@@ -569,8 +558,8 @@ jobs:
   release_packages:
     name: Release Packages
     needs:
-      - scala_unit_tests
-      - integration_tests
+      - required_scala_unit_tests
+      - required_integration_tests
       - build_packages
     if: "github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')"
     runs-on: ubuntu-latest
