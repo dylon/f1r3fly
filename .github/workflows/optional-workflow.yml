@@ -62,9 +62,11 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y $(cat .github/apt-dependencies.txt)
 
-      - name: Load Working Tree
-        uses: actions/download-artifact@v4
+      - name: Download rchain-worktree Artifact
+        uses: dawidd6/action-download-artifact@v6
         with:
+          workflow: required-workflow.yml
+          run_id: ${{ github.event.workflow_run.id }}
           name: rchain-worktree
           path: /tmp
 
@@ -73,10 +75,8 @@ jobs:
         run: tar -H posix -xzf /tmp/rchain-worktree.tar.gz
 
       - name: Run Unit Tests
-        # continue-on-error: true
         shell: bash -ex {0}
         run: .github/run-unit-test-selection
-
 
   optional_integration_tests:
     name: Optional Integration Tests
@@ -137,7 +137,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.7.17'
-          cache: 'pip' # caching pip dependencies
+          cache: 'pip'
 
       - name: Install Python dependencies
         shell: bash -ex {0}
@@ -159,9 +159,11 @@ jobs:
         with:
           platforms: linux/amd64,linux/arm64
 
-      - name: Load Docker Image
-        uses: actions/download-artifact@v4
+      - name: Download artifacts-docker Artifact
+        uses: dawidd6/action-download-artifact@v6
         with:
+          workflow: required-workflow.yml
+          run_id: ${{ github.event.workflow_run.id }}
           name: artifacts-docker
           path: /tmp
 
@@ -172,7 +174,6 @@ jobs:
       - name: Run Integration Test
         env:
           PYTEST_ADDOPTS: -v
-        # continue-on-error: true
         shell: bash -ex {0}
         run: |
           pushd integration-tests
