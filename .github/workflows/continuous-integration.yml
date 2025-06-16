@@ -1,10 +1,4 @@
-# GitHub Actions workflow for RChain continuous integration.
-#
-# For information GitHub Actions see:
-# https://help.github.com/en/actions/automating-your-workflow-with-github-actions/getting-started-with-github-actions
-# https://help.github.com/en/actions/automating-your-workflow-with-github-actions/configuring-workflows
-
-name: CI
+name: Build, Test, and Deploy
 on:
   push:
     branches:
@@ -14,6 +8,7 @@ on:
   pull_request:
     branches:
       - dev
+      - main
       - 'feature/**'
 
 env:
@@ -24,86 +19,135 @@ env:
   # OpenJDK 11, makes some unit tests occasionally fail on OutOfMemoryError on
   # GitHub runners which have only 7GB of RAM.
   _JAVA_OPTIONS: -XX:MaxRAMPercentage=80.0 -XX:MaxDirectMemorySize=128M
+  SBT_OPTS: -Dsbt.task.timings=true -Xmx4g -Xss2m -Dsbt.supershell=false
 
 jobs:
-
-  # Most jobs run in rchain/buildenv Docker container. This container image has
-  # everything needed to build RChain and run unit and integration tests. For
-  # more information about the image see
-  # https://github.com/rchain/buildenv/blob/master/Dockerfile
-
-
-  # Build RChain and save it for next jobs.
+  # Build and save artifacts for next jobs.
   build_base:
     name: Build Base
     runs-on: ubuntu-latest
-    container: rchain/buildenv
     outputs:
       VERSION: ${{ env.VERSION }}
       BRANCH: ${{ env.BRANCH }}
       DEV_LATEST_TAG: ${{ env.DEV_LATEST_TAG }}
     steps:
       - name: Clone Repository
-        uses: actions/checkout@v1
+        uses: actions/checkout@v4
+
+      - name: Set up GHC ${{ matrix.ghc-version }}
+        uses: haskell-actions/setup@v2
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+          cache: 'sbt'
+
+      - name: Add SBT APT repositories
+        shell: bash -ex {0}
+        run: |
+          # https://www.scala-sbt.org/1.x/docs/Installing-sbt-on-Linux.html#Ubuntu+and+other+Debian-based+distributions
+          echo "deb https://repo.scala-sbt.org/scalasbt/debian all main" | sudo tee /etc/apt/sources.list.d/sbt.list
+          echo "deb https://repo.scala-sbt.org/scalasbt/debian /" | sudo tee /etc/apt/sources.list.d/sbt_old.list
+          curl -sL "https://keyserver.ubuntu.com/pks/lookup?op=get&search=0x2EE0EA64E40A89B84B2DF73499E82A75642AC823" | sudo apt-key add
+
+      - name: Install APT Dependencies
+        shell: bash -ex {0}
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y $(cat .github/apt-dependencies.txt)
+
+      - name: Generate Cabal cache key
+        id: cabal-cache-key
+        shell: bash -ex {0}
+        run: |
+          cabal update
+          echo "key=$(sha256sum ~/.cabal/packages/* | sha256sum | awk '{print $1}')" >> $GITHUB_OUTPUT
+
+      - name: Cache Cabal store
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cabal/store
+            ~/.cabal/packages
+            ~/.cabal/bin
+          key: ${{ runner.os }}-cabal-${{ hashFiles('.github/cabal-dependencies.txt') }}-${{ steps.cabal-cache-key.outputs.key }}
+          restore-keys: |
+            ${{ runner.os }}-cabal-
+
+      - name: Install Cabal dependencies
+        shell: bash -ex {0}
+        run: |
+          set -ex
+          cabal update
+          xargs cabal install --overwrite-policy=always < .github/cabal-dependencies.txt
+          echo "$HOME/.cabal/bin" >> $GITHUB_PATH
+
+      - name: Tool versions
+        shell: bash -ex {0}
+        run: |
+          ghc --version
+          cabal --version
+          alex --version
+          happy --version
+          bnfc --version
+          java -version
+          sbt --version
+          python --version
+          pip --version
 
       - name: Initialize Environment
-        shell: bash
+        shell: bash -exu -o pipefail {0}
         run: |
-          set -eu -o pipefail
-
-          ./.github/init-environment
+          git fetch origin
+          git fetch origin --tags
 
           # Version from Git repository (tag-commit)
-          version="`git describe --tags --always`"
-          echo "VERSION=$version" >> $GITHUB_ENV
+          VERSION="$(git describe --tags --always)"
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
 
-          # Find latest tag on dev branch
-          dev_latest_tag="`git describe --tags --abbrev=0 origin/dev`"
-          echo "DEV_LATEST_TAG=$dev_latest_tag" >> $GITHUB_ENV
+          # Find latest tag on dev branch, with fallback
+          if git ls-remote --heads origin dev | grep -q "refs/heads/dev"; then
+            DEV_LATEST_TAG="$(git describe --tags --abbrev=0 origin/dev 2>/dev/null || echo 'unknown')"
+          else
+            DEV_LATEST_TAG="unknown"
+          fi
+          echo "DEV_LATEST_TAG=$DEV_LATEST_TAG" >> $GITHUB_ENV
 
           # Find related HEAD branch
-          branch=""
+          BRANCH=""
           if [[ $GITHUB_REF =~ ^refs/tags/ ]]; then
             # Tag related to multiple branches leaves empty branch variable
-            raw_branch=$(git branch -r --contains ${{ github.ref }})
-            if [[ $raw_branch =~ ^[\ ]*origin/([^ ]*)$ ]]; then
-              branch="${BASH_REMATCH[1]}"
+            RAW_BRANCH=$(git branch -r --contains ${{ github.ref }})
+            if [[ $RAW_BRANCH =~ ^[\ ]*origin/([^ ]*)$ ]]; then
+              BRANCH="${BASH_REMATCH[1]}"
             fi
           elif [[ $GITHUB_REF =~ ^refs/heads/ ]]; then
-            branch=${GITHUB_REF#refs/*/}
+            BRANCH=${GITHUB_REF#refs/*/}
           else
-            branch=$GITHUB_HEAD_REF
+            BRANCH=$GITHUB_HEAD_REF
           fi
-          echo "BRANCH=$branch" >> $GITHUB_ENV
-
-      - name: Restore Cache
-        uses: actions/cache@v1
-        with:
-          path: ${{ env.CACHE_ROOT }}
-          key: ${{ env.CACHE_KEY_PREFIX_SCALA }}${{ env.CACHE_KEY_HASH_SCALA }}
-          restore-keys: ${{ env.CACHE_KEY_PREFIX_SCALA }}
+          echo "BRANCH=$BRANCH" >> $GITHUB_ENV
 
       - name: Compile
-        run: |
-          export SBT_OPTS="$SBT_OPTS -Dsbt.task.timings=true -Xmx2500m -Xss2m"
-          sbt update scalafmtCheckAll compile
+        shell: bash -ex {0}
+        run: sbt update scalafmtCheckAll compile
 
       - name: Pack Working Tree
-        run: tar -H posix -czf ../rchain-worktree.tar.gz .
+        shell: bash -ex {0}
+        run: tar -H posix -czf /tmp/rchain-worktree.tar.gz .
 
       - name: Save Working Tree
-        uses: actions/upload-artifact@v1
+        uses: actions/upload-artifact@v4
         with:
           name: rchain-worktree
-          path: ../rchain-worktree.tar.gz
+          path: /tmp/rchain-worktree.tar.gz
 
 
-  # Get compiled RChain and run unit tests.
-  run_unit_tests:
-    name: Unit Tests
+  scala_unit_tests:
+    name: Unit Tests (Scala)
     needs: build_base
     runs-on: ubuntu-latest
-    container: rchain/buildenv
     strategy:
       fail-fast: false
       matrix:
@@ -130,30 +174,41 @@ jobs:
       TESTS: ${{ matrix.tests }}
     steps:
       - name: Clone Repository
-        uses: actions/checkout@v1
+        uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+          cache: 'sbt'
+
+      - name: Add SBT APT repositories
+        shell: bash -ex {0}
+        run: |
+          # https://www.scala-sbt.org/1.x/docs/Installing-sbt-on-Linux.html#Ubuntu+and+other+Debian-based+distributions
+          echo "deb https://repo.scala-sbt.org/scalasbt/debian all main" | sudo tee /etc/apt/sources.list.d/sbt.list
+          echo "deb https://repo.scala-sbt.org/scalasbt/debian /" | sudo tee /etc/apt/sources.list.d/sbt_old.list
+          curl -sL "https://keyserver.ubuntu.com/pks/lookup?op=get&search=0x2EE0EA64E40A89B84B2DF73499E82A75642AC823" | sudo apt-key add
+
+      - name: Install APT Dependencies
+        shell: bash -ex {0}
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y $(cat .github/apt-dependencies.txt)
 
       - name: Load Working Tree
-        uses: actions/download-artifact@v1
+        uses: actions/download-artifact@v4
         with:
           name: rchain-worktree
+          path: /tmp
 
       - name: Restore Working Tree
-        run: tar -H posix -xzf rchain-worktree/rchain-worktree.tar.gz
-
-      - name: Initialize Environment
-        run: ./.github/init-environment
-
-      - name: Restore Cache
-        uses: actions/cache@v1
-        with:
-          path: ${{ env.CACHE_ROOT }}
-          key: ${{ env.CACHE_KEY_PREFIX_SCALA }}${{ env.CACHE_KEY_HASH_SCALA }}
-          restore-keys: ${{ env.CACHE_KEY_PREFIX_SCALA }}
+        shell: bash -ex {0}
+        run: tar -H posix -xzf /tmp/rchain-worktree.tar.gz
 
       - name: Run Unit Tests
-        run: |
-          export SBT_OPTS="$SBT_OPTS"
-          ./.github/run-unit-test-selection
+        shell: bash -ex {0}
+        run: .github/run-unit-test-selection
 
 
   # Get compiled RChain, build Docker image, and save it for next jobs.
@@ -161,41 +216,80 @@ jobs:
     name: Build Docker Image
     needs: build_base
     runs-on: ubuntu-latest
-    container: rchain/buildenv
     steps:
+      - name: Clone Repository
+        uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+          cache: 'sbt'
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Install cross
+        shell: bash -ex {0}
+        run: |
+          cargo install cross
+          cross --version
+
+      - name: Enable Containerd Image Store
+        shell: bash -ex {0}
+        run: |
+          sudo mkdir -p /etc/docker
+          echo '{"features": {"containerd-snapshotter": true}}' | sudo tee /etc/docker/daemon.json | jq
+          sudo systemctl restart docker
+
+      - name: Set up QEMU for multi-platform emulation
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: linux/amd64,linux/arm64
+
+      - name: Add SBT APT repositories
+        shell: bash -ex {0}
+        run: |
+          # https://www.scala-sbt.org/1.x/docs/Installing-sbt-on-Linux.html#Ubuntu+and+other+Debian-based+distributions
+          echo "deb https://repo.scala-sbt.org/scalasbt/debian all main" | sudo tee /etc/apt/sources.list.d/sbt.list
+          echo "deb https://repo.scala-sbt.org/scalasbt/debian /" | sudo tee /etc/apt/sources.list.d/sbt_old.list
+          curl -sL "https://keyserver.ubuntu.com/pks/lookup?op=get&search=0x2EE0EA64E40A89B84B2DF73499E82A75642AC823" | sudo apt-key add
+
+      - name: Install APT Dependencies
+        shell: bash -ex {0}
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y $(cat .github/apt-dependencies.txt)
+
       - name: Load Working Tree
-        uses: actions/download-artifact@v1
+        uses: actions/download-artifact@v4
         with:
           name: rchain-worktree
+          path: /tmp
 
       - name: Restore Working Tree
-        run: tar -H posix -xzf rchain-worktree/rchain-worktree.tar.gz
-
-      - name: Initialize Environment
-        run: ./.github/init-environment
-
-      - name: Restore Cache
-        uses: actions/cache@v1
-        with:
-          path: ${{ env.CACHE_ROOT }}
-          key: ${{ env.CACHE_KEY_PREFIX_SCALA }}${{ env.CACHE_KEY_HASH_SCALA }}
-          restore-keys: ${{ env.CACHE_KEY_PREFIX_SCALA }}
+        shell: bash -ex {0}
+        run: tar -H posix -xzf /tmp/rchain-worktree.tar.gz
 
       - name: Build Docker Image
-        run: sbt node/docker:publishLocal
+        shell: bash -ex {0}
+        run: |
+          docker context use default
+          sbt ";compile ;project node ;Docker/publishLocal ;project rchain"
 
       - name: Export Docker Image
+        shell: bash -ex {0}
         run: |
           mkdir ../artifacts
           git describe --tags --always >../artifacts/version.txt
-          docker image save coop.rchain/rnode \
-              | gzip >../artifacts/rnode-docker.tar.gz
+          docker image save f1r3flyindustries/f1r3fly-scala-node \
+              | gzip > /tmp/rnode-docker.tar.gz
 
       - name: Save Docker Image
-        uses: actions/upload-artifact@v1
+        uses: actions/upload-artifact@v4
         with:
           name: artifacts-docker
-          path: ../artifacts/
+          path: /tmp/rnode-docker.tar.gz
 
 
   # Get compiled RChain, build distro packages, and save them for next jobs.
@@ -204,47 +298,63 @@ jobs:
     needs: build_base
     if: "github.event_name != 'pull_request'"
     runs-on: ubuntu-latest
-    container: rchain/buildenv
     steps:
+      - name: Clone Repository
+        uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+          cache: 'sbt'
+
+      - name: Add SBT APT repositories
+        shell: bash -ex {0}
+        run: |
+          # https://www.scala-sbt.org/1.x/docs/Installing-sbt-on-Linux.html#Ubuntu+and+other+Debian-based+distributions
+          echo "deb https://repo.scala-sbt.org/scalasbt/debian all main" | sudo tee /etc/apt/sources.list.d/sbt.list
+          echo "deb https://repo.scala-sbt.org/scalasbt/debian /" | sudo tee /etc/apt/sources.list.d/sbt_old.list
+          curl -sL "https://keyserver.ubuntu.com/pks/lookup?op=get&search=0x2EE0EA64E40A89B84B2DF73499E82A75642AC823" | sudo apt-key add
+
+      - name: Install APT Dependencies
+        shell: bash -ex {0}
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y $(cat .github/apt-dependencies.txt)
+
       - name: Load Working Tree
-        uses: actions/download-artifact@v1
+        uses: actions/download-artifact@v4
         with:
           name: rchain-worktree
+          path: /tmp
 
       - name: Restore Working Tree
-        run: tar -H posix -xzf rchain-worktree/rchain-worktree.tar.gz
-
-      - name: Initialize Environment
-        run: ./.github/init-environment
-
-      - name: Restore Cache
-        uses: actions/cache@v1
-        with:
-          path: ${{ env.CACHE_ROOT }}
-          key: ${{ env.CACHE_KEY_PREFIX_SCALA }}${{ env.CACHE_KEY_HASH_SCALA }}
-          restore-keys: ${{ env.CACHE_KEY_PREFIX_SCALA }}
+        shell: bash -ex {0}
+        run: tar -H posix -xzf /tmp/rchain-worktree.tar.gz
 
       - name: Build Packages
+        shell: bash -ex {0}
         run: sbt
           node/universal:packageZipTarball
           node/debian:packageBin
           node/rpm:packageBin
 
       - name: Export Packages
+        shell: bash -ex {0}
         run: |
-          mkdir ../artifacts
-          git describe --tags --always >../artifacts/version.txt
+          mkdir /tmp/artifacts
+          git describe --tags --always >/tmp/artifacts/version.txt
           cp -av \
               node/target/universal/rnode-*.tgz \
               node/target/rnode_*.deb \
               node/target/rpm/RPMS/noarch/rnode-*.rpm \
-              ../artifacts/
+              /tmp/artifacts/
 
       - name: Save Packages
-        uses: actions/upload-artifact@v1
+        uses: actions/upload-artifact@v4
         with:
           name: artifacts-packages
-          path: ../artifacts/
+          path: /tmp/artifacts/
 
 
   # Get RNode Docker image and run integration tests.
@@ -263,10 +373,10 @@ jobs:
   # workarounds (see below).
   #
   # [1] https://github.community/t5/GitHub-Actions/Container-volumes-key-not-mounting-volume/m-p/34798
-  run_integration_tests:
+  integration_tests:
     name: Integration Tests
     needs: build_docker_image
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     strategy:
       fail-fast: false
       matrix:
@@ -296,66 +406,74 @@ jobs:
           - REMAINDER # Do not modify/remove!
     env:
       TESTS: ${{ matrix.tests }}
-      # We don't use $CACHE_ROOT in host because it may not be (it is not)
-      # writeable by host runner unprivileged account. See note above.
-      HOST_CACHE_ROOT: /tmp/rchain-build-cache
       # In integration tests multiple RNode instances are created so memory
       # limit in lower to prevent sporadic crashes.
       _JAVA_OPTIONS: -XX:MaxRAMPercentage=35.0
     steps:
       - name: Clone Repository
-        uses: actions/checkout@v1
+        uses: actions/checkout@v4
 
-      - name: Initialize Environment
-        # Only initialize cache keys for "Restore Cache". We're running in the
-        # host now so we don't want to prepare filesystem here.
-        run: _READ_ONLY=1 ./.github/init-environment
-
-      - name: Restore Cache
-        uses: actions/cache@v1
+      - uses: actions/setup-java@v4
         with:
-          path: ${{ env.HOST_CACHE_ROOT }}
-          key: ${{ env.CACHE_KEY_PREFIX_PYTHON }}${{ env.CACHE_KEY_HASH_PYTHON }}
-          restore-keys: ${{ env.CACHE_KEY_PREFIX_PYTHON }}
+          distribution: 'temurin'
+          java-version: '17'
+          cache: 'sbt'
+
+      - name: Add SBT APT repositories
+        shell: bash -ex {0}
+        run: |
+          # https://www.scala-sbt.org/1.x/docs/Installing-sbt-on-Linux.html#Ubuntu+and+other+Debian-based+distributions
+          echo "deb https://repo.scala-sbt.org/scalasbt/debian all main" | sudo tee /etc/apt/sources.list.d/sbt.list
+          echo "deb https://repo.scala-sbt.org/scalasbt/debian /" | sudo tee /etc/apt/sources.list.d/sbt_old.list
+          curl -sL "https://keyserver.ubuntu.com/pks/lookup?op=get&search=0x2EE0EA64E40A89B84B2DF73499E82A75642AC823" | sudo apt-key add
+
+      - name: Install APT Dependencies
+        shell: bash -ex {0}
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y $(cat .github/apt-dependencies.txt)
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.7.17'
+          cache: 'pip' # caching pip dependencies
+
+      - name: Install Python dependencies
+        shell: bash -ex {0}
+        run: |
+          pip install pipenv
+          pushd integration-tests
+          pipenv sync
+          popd
+
+      - name: Enable Containerd Image Store
+        shell: bash -ex {0}
+        run: |
+          sudo mkdir -p /etc/docker
+          echo '{"features": {"containerd-snapshotter": true}}' | sudo tee /etc/docker/daemon.json | jq
+          sudo systemctl restart docker
+
+      - name: Set up QEMU for multi-platform emulation
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: linux/amd64,linux/arm64
 
       - name: Load Docker Image
-        uses: actions/download-artifact@v1
+        uses: actions/download-artifact@v4
         with:
           name: artifacts-docker
+          path: /tmp
 
       - name: Import Docker Image
-        run: zcat artifacts-docker/rnode-docker.tar.gz | docker image load
-
-      # The cached files are owned by host runner unprivileged user. See comment
-      # in "Fix Cache Permissions (Post)" step for details. Some programs
-      # running in rchain/buildenv container as root may be unhappy about that
-      # (pip issues a warning). Change ownership to root to avoid possible
-      # problems. There are not that many cached files for integration tests so
-      # performance impact is likely minimal.
-      - name: Fix Cache Permissions (Pre)
-        run: |
-          mkdir -p ${{ env.HOST_CACHE_ROOT }}
-          sudo chown -R 0:0 ${{ env.HOST_CACHE_ROOT }}
+        shell: bash -ex {0}
+        run: zcat /tmp/rnode-docker.tar.gz | docker image load
 
       - name: Run Integration Test
+        shell: bash -ex {0}
         run: |
-          docker run --network=host \
-              -v /var/run/docker.sock:/var/run/docker.sock \
-              -v /tmp:/tmp \
-              -v $PWD:/work \
-              -v ${{ env.HOST_CACHE_ROOT }}:$CACHE_ROOT \
-              -e TESTS="$TESTS" \
-              -e _JAVA_OPTIONS="$_JAVA_OPTIONS" \
-              -w /work \
-              rchain/buildenv ./.github/run-integration-test-selection
-
-      # Files created in rchain/buildenv container are owned by root, so we need
-      # to change ownership to host runner unprivileged account here, because
-      # right after this step, the runner is going to save cache preserving file
-      # attributes, and it would fail to restore them in "Restore Cache" above
-      # in future workflow runs. See note above.
-      - name: Fix Cache Permissions (Post)
-        run: sudo chown -R $(id -u):$(id -g) ${{ env.HOST_CACHE_ROOT }}
+          pushd integration-tests
+          pipenv run ../.github/run-integration-test-selection
+          popd
 
 
   # release_* jobs make built artifacts available to public and run only on new
@@ -371,106 +489,109 @@ jobs:
   release_docker_image:
     name: Release Docker Image
     needs:
-      - run_unit_tests
-      - run_integration_tests
+      - scala_unit_tests
+      - integration_tests
       - build_docker_image
       - build_base
     if: "github.event_name == 'push' && (startsWith(github.ref, 'refs/tags/') || github.ref == 'refs/heads/trying' || github.ref == 'refs/heads/staging')"
     runs-on: ubuntu-latest
     steps:
+      - name: Enable Containerd Image Store
+        shell: bash -ex {0}
+        run: |
+          sudo mkdir -p /etc/docker
+          echo '{"features": {"containerd-snapshotter": true}}' | sudo tee /etc/docker/daemon.json | jq
+          sudo systemctl restart docker
+
+      - name: Set up QEMU for multi-platform emulation
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: linux/amd64,linux/arm64
+
       - name: Load Docker Image
-        uses: actions/download-artifact@v1
+        uses: actions/download-artifact@v4
         with:
           name: artifacts-docker
+          path: /tmp
 
       - name: Import Docker Image
-        run: zcat artifacts-docker/rnode-docker.tar.gz | docker image load
+        shell: bash -ex {0}
+        run: zcat /tmp/rnode-docker.tar.gz | docker image load
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Publish Docker Image
         env:
-          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
-          DOCKERHUB_PASSWORD: ${{ secrets.DOCKERHUB_PASSWORD }}
           DOCKER_IMAGE_NAME: ${{ secrets.DOCKER_IMAGE_NAME }}
           # Output from build_base job
           VERSION: ${{ needs.build_base.outputs.VERSION }}
           BRANCH: ${{ needs.build_base.outputs.BRANCH }}
           DEV_LATEST_TAG: ${{ needs.build_base.outputs.DEV_LATEST_TAG }}
-        shell: bash
+        shell: bash -exu -o pipefail {0}
         run: |
-          set -eu -o pipefail
-
-          for var in DOCKERHUB_USERNAME DOCKERHUB_PASSWORD DOCKER_IMAGE_NAME; do
-            if [[ ! -v $var || -z ${!var} ]]; then
-              echo "Required variable $var is not set." >&2
+          for VAR in DOCKER_IMAGE_NAME; do
+            if [[ ! -v $VAR || -z ${!VAR} ]]; then
+              echo "Required variable $VAR is not set." >&2
               exit 1
             fi
           done
 
-          suffix=""
-          ci_run=""
+          SUFFIX=""
+          CI_RUN=""
 
           # Add suffix if trying or merging
-          if [[ $BRANCH =~ ^(trying|staging)$ ]]; then
-            suffix="-$BRANCH"
+          if [[ "$BRANCH" =~ ^(trying|staging)$ ]]; then
+            SUFFIX="-$BRANCH"
 
             # Add CI run number if trying
             if [[ $BRANCH =~ ^trying$ ]]; then
-              ci_run="-ci-$GITHUB_RUN_NUMBER"
+              CI_RUN="-ci-$GITHUB_RUN_NUMBER"
             fi
           fi
 
-          builtin echo "$DOCKERHUB_PASSWORD" \
-              | docker login -u "$DOCKERHUB_USERNAME" --password-stdin
-
           set -x
 
-          image_name="$DOCKER_IMAGE_NAME$suffix"
-          img_version_raw="$image_name:$VERSION$ci_run"
+          IMAGE_NAME="$DOCKER_IMAGE_NAME$SUFFIX"
+          IMG_VERSION_RAW="$IMAGE_NAME:$VERSION$CI_RUN"
           # Replace unsupported character `+`
-          img_version="${img_version_raw//[+]/__}"
-          img_latest="$image_name:latest"
+          IMG_VERSION="${IMG_VERSION_RAW//[+]/__}"
+          IMG_LATEST="$IMAGE_NAME:latest"
 
           # Release Docker image
-          docker tag coop.rchain/rnode:latest $img_version
-          docker push $img_version
+          docker tag f1r3flyindustries/f1r3fly-scala-node:latest $IMG_VERSION
+          docker push $IMG_VERSION
 
           # Tag Docker image as latest if tag is the latest on dev branch
           if [[ $GITHUB_REF =~ ^refs/tags/ ]] && [[ $DEV_LATEST_TAG =~ $VERSION ]]; then
-            docker tag coop.rchain/rnode:latest $img_latest
-            docker push $img_latest
+            docker tag f1r3flyindustries/f1r3fly-scala-node:latest $IMG_LATEST
+            docker push $IMG_LATEST
           fi
 
   # GitHub (create) release and packages
   release_packages:
     name: Release Packages
     needs:
-      - run_unit_tests
-      - run_integration_tests
+      - scala_unit_tests
+      - integration_tests
       - build_packages
     if: "github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')"
     runs-on: ubuntu-latest
     steps:
       - name: Load Packages
-        uses: actions/download-artifact@v1
+        uses: actions/download-artifact@v4
         with:
           name: artifacts-packages
+          path: /tmp/artifacts
       - name: Update release and release artifacts
         uses: ncipollo/release-action@v1
         with:
-          artifacts: artifacts-packages/*
+          artifacts: /tmp/artifacts/*
           prerelease: true
           draft: true
           allowUpdates: true
           omitBodyDuringUpdate: true
           token: ${{ secrets.GITHUB_TOKEN }}
-
-  # Job to notify bors when run is successful. Skipped and cancelled job is considered
-  # as failure. More info https://github.com/bors-ng/bors-ng/issues/1115.
-  bors_success:
-    name: bors build finished
-    needs:
-      - release_docker_image
-    if: "github.event_name == 'push' && (github.ref == 'refs/heads/trying' || github.ref == 'refs/heads/staging') && success()"
-    runs-on: ubuntu-latest
-    steps:
-      - run: true
