@@ -444,7 +444,6 @@ lazy val node = (project in file("node"))
       Seq(
         Cmd("LABEL", s"""MAINTAINER="${maintainer.value}""""),
         Cmd("LABEL", s"""version="${version.value}""""),
-        Cmd("RUN", "chmod +x /opt/docker/bin/docker-entrypoint.sh"),
         Cmd("USER", "root"),
         Cmd("USER", (Docker / daemonUser).value),
         Cmd(
@@ -471,7 +470,6 @@ lazy val node = (project in file("node"))
       directory((baseDirectory in rholang).value / "examples")
         .map { case (f, p) => f -> s"$base/$p" }
     },
-    mappings in Docker += file("scripts/docker-entrypoint.sh") -> "/opt/docker/bin/docker-entrypoint.sh",
     // End of sbt-native-packager settings
     connectInput := true,
     outputStrategy := Some(StdoutOutput),
