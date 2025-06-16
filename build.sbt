@@ -428,7 +428,7 @@ lazy val node = (project in file("node"))
     dockerUpdateLatest := sys.env.get("DRONE").isEmpty,
     // dockerBaseImage := "ghcr.io/graalvm/jdk:ol8-java17-22.3.3",
     dockerBaseImage := "azul/zulu-openjdk:17.0.9-jre-headless", // Using this image because resolves error of GLIB_C version for rspace++
-    dockerEntrypoint := List("/opt/docker/bin/docker-entrypoint.sh"),
+    dockerEntrypoint := List("/opt/docker/bin/rnode", "--profile=docker", "-XX:ErrorFile=/var/lib/rnode/hs_err_pid%p.log"),
     daemonUserUid in Docker := None,
     daemonUser in Docker := "daemon",
     dockerExposedPorts := List(40400, 40401, 40402, 40403, 40404),
@@ -472,14 +472,6 @@ lazy val node = (project in file("node"))
         .map { case (f, p) => f -> s"$base/$p" }
     },
     mappings in Docker += file("scripts/docker-entrypoint.sh") -> "/opt/docker/bin/docker-entrypoint.sh",
-    mappings in Docker += file(
-      "rust_libraries/docker/release/aarch64/librspace_plus_plus_rhotypes.so"
-    ) -> "opt/docker/rust_libraries/release/aarch64/librspace_plus_plus_rhotypes.so",
-    mappings in Docker += file(
-      "rust_libraries/docker/release/amd64/librspace_plus_plus_rhotypes.so"
-    )                                                                                 -> "opt/docker/rust_libraries/release/amd64/librspace_plus_plus_rhotypes.so",
-    mappings in Docker += file("rust_libraries/docker/release/aarch64/librholang.so") -> "opt/docker/rust_libraries/release/aarch64/librholang.so",
-    mappings in Docker += file("rust_libraries/docker/release/amd64/librholang.so")   -> "opt/docker/rust_libraries/release/amd64/librholang.so",
     // End of sbt-native-packager settings
     connectInput := true,
     outputStrategy := Some(StdoutOutput),
