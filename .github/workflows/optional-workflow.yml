@@ -97,6 +97,7 @@ jobs:
         tests:
           - test_dag_correctness
           - test_finalization
+          - test_propose
           - test_slash_invalid_block_hash
           - test_slash_invalid_block_number
           - test_slash_invalid_block_seq

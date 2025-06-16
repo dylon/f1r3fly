@@ -145,7 +145,7 @@ jobs:
 
 
   required_scala_unit_tests:
-    name: Unit Tests (Scala)
+    name: Required Unit Tests (Scala)
     needs: build_base
     runs-on: ubuntu-latest
     strategy:
@@ -366,7 +366,7 @@ jobs:
   #
   # [1] https://github.community/t5/GitHub-Actions/Container-volumes-key-not-mounting-volume/m-p/34798
   required_integration_tests:
-    name: Integration Tests
+    name: Required Integration Tests
     needs: build_docker_image
     runs-on: ubuntu-22.04
     strategy:
@@ -384,7 +384,6 @@ jobs:
         tests:
           - test_backward_compatible
           - test_genesis_ceremony
-          - test_propose
           - test_storage
           - test_wallets
     env:
