@@ -5,8 +5,7 @@ from typing import Iterable
 import yaml
 
 GITHUB_DIR = os.path.dirname(os.path.abspath(__file__))
-REQUIRED_WORKFLOW_PATH = GITHUB_DIR + '/workflows/build-test-and-deploy.yml'
-OPTIONAL_WORKFLOW_PATH = GITHUB_DIR + '/workflows/optional-tests.yml'
+WORKFLOW_PATH = GITHUB_DIR + '/workflows/continuous-integration.yml'
 REMAINDER = 'REMAINDER'
 
 
@@ -24,13 +23,10 @@ def read_workflow(workflow_path: Path) -> dict:
 
 def get_test_selections() -> Iterable[str]:
     project_root = get_project_root()
-    required_workflow_path = project_root / REQUIRED_WORKFLOW_PATH
-    optional_workflow_path = project_root / OPTIONAL_WORKFLOW_PATH
-    required_workflow = read_workflow(required_workflow_path)
-    optional_workflow = read_workflow(optional_workflow_path)
+    workflow_path = project_root / WORKFLOW_PATH
+    workflow = read_workflow(workflow_path)
     selections = \
-        required_workflow['jobs']['run_required_scala_unit_tests']['strategy']['matrix']['tests'] + \
-        optional_workflow['jobs']['run_optional_scala_unit_tests']['strategy']['matrix']['tests']
+        workflow['jobs']['scala_unit_tests']['strategy']['matrix']['tests']
 
     remainder_found = False
 
