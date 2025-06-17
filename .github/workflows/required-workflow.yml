@@ -508,15 +508,16 @@ jobs:
 
       - name: Publish Docker Image
         env:
-          DOCKER_IMAGE_NAME: ${{ secrets.LEGACY_DOCKER_IMAGE_NAME }}
+          SOURCE_DOCKER_IMAGE_NAME: f1r3flyindustries/f1r3fly-scala-node
+          TARGET_DOCKER_IMAGE_NAME: ${{ secrets.LEGACY_DOCKER_IMAGE_NAME }}
           # Output from build_base job
           VERSION: ${{ needs.build_base.outputs.VERSION }}
           BRANCH: ${{ needs.build_base.outputs.BRANCH }}
           DEV_LATEST_TAG: ${{ needs.build_base.outputs.DEV_LATEST_TAG }}
         shell: bash -exu -o pipefail {0}
         run: |
-          if [[ -z "$DOCKER_IMAGE_NAME" ]]; then
-            echo "Required variable \$DOCKER_IMAGE_NAME is not set." >&2
+          if [[ -z "$TARGET_DOCKER_IMAGE_NAME" ]]; then
+            echo "Required variable \$TARGET_DOCKER_IMAGE_NAME is not set." >&2
             exit 1
           fi
 
@@ -535,15 +536,15 @@ jobs:
 
           set -x
 
-          IMAGE_NAME="$DOCKER_IMAGE_NAME$SUFFIX"
+          IMAGE_NAME="$TARGET_DOCKER_IMAGE_NAME$SUFFIX"
           IMG_VERSION_RAW="$IMAGE_NAME:$VERSION$CI_RUN"
           # Replace unsupported character `+`
           IMG_VERSION="${IMG_VERSION_RAW//[+]/__}"
           IMG_LATEST="$IMAGE_NAME:latest"
 
           # Release Docker image
-          docker tag $IMAGE_NAME $IMG_VERSION
-          docker tag $IMAGE_NAME $IMG_LATEST
+          docker tag $SOURCE_DOCKER_IMAGE_NAME $IMG_VERSION
+          docker tag $SOURCE_DOCKER_IMAGE_NAME $IMG_LATEST
           docker push $IMG_VERSION
           docker push $IMG_LATEST
 
