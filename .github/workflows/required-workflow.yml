@@ -515,7 +515,7 @@ jobs:
           DEV_LATEST_TAG: ${{ needs.build_base.outputs.DEV_LATEST_TAG }}
         shell: bash -exu -o pipefail {0}
         run: |
-          if [[ ! -v "$DOCKER_IMAGE_NAME" || -z "${!DOCKER_IMAGE_NAME}" ]]; then
+          if [[ -z "$DOCKER_IMAGE_NAME" ]]; then
             echo "Required variable \$DOCKER_IMAGE_NAME is not set." >&2
             exit 1
           fi
