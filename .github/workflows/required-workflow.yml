@@ -542,7 +542,8 @@ jobs:
           IMG_LATEST="$IMAGE_NAME:latest"
 
           # Release Docker image
-          docker tag $IMG_VERSION $IMG_LATEST
+          docker tag $IMAGE_NAME $IMG_VERSION
+          docker tag $IMAGE_NAME $IMG_LATEST
           docker push $IMG_VERSION
           docker push $IMG_LATEST
 
